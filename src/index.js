@@ -76,7 +76,7 @@ function publishDashboard(markets = dashboardMarkets, alerts = dashboardAlerts, 
     liveMarketCount: liveMarkets.length,
     alerts,
     liveMatches,
-    markets: liveMarkets
+    markets: [...markets]
       .sort((left, right) => right.yesRate - left.yesRate)
       .map((market) => ({
         event: market.event,

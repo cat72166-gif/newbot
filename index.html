@@ -30,7 +30,7 @@
       h1 { margin: 7px 0 6px; font-size: clamp(2rem, 5vw, 3.8rem); line-height: 1; letter-spacing: -.06em; }
       .subtitle, .updated { color: var(--muted); }
       .status { padding: 9px 13px; border: 1px solid var(--line); border-radius: 999px; white-space: nowrap; color: var(--cyan); background: #151b1b; }
-      .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+      .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
       .stat, .panel { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: none; }
       .stat { padding: 18px 20px; }
       .stat strong { display: block; font-size: 2rem; letter-spacing: -.05em; }
@@ -73,8 +73,9 @@
       </header>
       <section class="stats" aria-label="Dashboard summary">
         <div class="stat"><strong id="live-match-count">—</strong><span>live matches</span></div>
-        <div class="stat"><strong id="market-count">—</strong><span>live markets above threshold</span></div>
-        <div class="stat"><strong id="top-rate">—</strong><span>highest current rate</span></div>
+        <div class="stat"><strong id="market-count">—</strong><span>target markets found</span></div>
+        <div class="stat"><strong id="qualifying-market-count">—</strong><span id="qualifying-market-label">above alert threshold</span></div>
+        <div class="stat"><strong id="top-rate">—</strong><span>highest target-market rate</span></div>
         <div class="stat"><strong id="player-count">—</strong><span>enriched players</span></div>
         <div class="stat"><strong id="alert-count">—</strong><span>alerts sent</span></div>
       </section>
@@ -83,8 +84,8 @@
           <div class="panel-head"><h2>Current rates</h2><span class="hint">highest first</span></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Player / match</th><th>Rate</th><th>Market</th><th>Time</th></tr></thead>
-              <tbody id="markets"><tr><td class="empty" colspan="4">Waiting for the first scan…</td></tr></tbody>
+              <thead><tr><th>Player / match</th><th>Rate</th><th>Market</th><th>Time</th><th>Alert status</th></tr></thead>
+              <tbody id="markets"><tr><td class="empty" colspan="5">Waiting for the first scan…</td></tr></tbody>
             </table>
           </div>
         </article>
@@ -146,27 +147,37 @@
       const formatRate = (value) => Number(value).toFixed(1);
       function render(state) {
         const markets = state.markets || [];
+        const threshold = Number(state.threshold ?? 40);
         const liveMatches = state.liveMatches || [];
         const alerts = state.alerts || [];
         const players = state.players || [];
         document.querySelector('#live-match-count').textContent = liveMatches.length;
         const liveMarketCount = state.liveMarketCount ?? markets.length;
         const targetMarketCount = state.targetMarketCount ?? markets.length;
-        document.querySelector('#market-count').textContent = liveMarketCount;
-        document.querySelector('#market-summary').textContent = `Target markets: ${targetMarketCount} · Live markets: ${liveMarketCount}`;
+        document.querySelector('#market-count').textContent = targetMarketCount;
+        document.querySelector('#qualifying-market-count').textContent = liveMarketCount;
+        document.querySelector('#qualifying-market-label').textContent = `above alert threshold (${formatRate(threshold)})`;
+        document.querySelector('#market-summary').textContent = `Target markets found: ${targetMarketCount} · Above threshold: ${liveMarketCount}`;
         document.querySelector('#player-count').textContent = players.length;
         document.querySelector('#alert-count').textContent = alerts.length;
         const targetMarkets = state.targetMarkets || (state.targetMarket ? [state.targetMarket] : []);
         document.querySelector('#target-markets').textContent = `Target markets available: ${targetMarkets.length ? targetMarkets.join(', ') : '—'}`;
         document.querySelector('#top-rate').textContent = markets.length ? formatRate(markets[0].yesRate) : '—';
-        document.querySelector('#status').textContent = state.updatedAt ? '● Live' : 'Waiting';
+        const statusLabel = {
+          running: '● Live',
+          starting: 'Starting',
+          degraded: '⚠ Degraded',
+          failed: '● Bot failed',
+        }[state.status] || 'Waiting';
+        document.querySelector('#status').textContent = statusLabel;
         document.querySelector('#markets').innerHTML = markets.length ? markets.map((market) => `
           <tr>
             <td><div class="player">${escapeHtml(market.player)}</div><div class="sub">${escapeHtml(market.league)} · ${escapeHtml(market.event)}</div></td>
             <td class="rate">${formatRate(market.yesRate)}</td>
             <td class="sub">${escapeHtml(market.market)}</td>
             <td class="sub">${escapeHtml(market.gameTime)}</td>
-          </tr>`).join('') : '<tr><td class="empty" colspan="4">No live scoring markets found.</td></tr>';
+            <td class="${market.yesRate > threshold ? 'score' : 'sub'}">${market.yesRate > threshold ? 'Alert eligible' : 'Below threshold'}</td>
+          </tr>`).join('') : '<tr><td class="empty" colspan="5">No target markets found on the latest scan.</td></tr>';
         document.querySelector('#live-matches').innerHTML = liveMatches.length ? liveMatches.map((match) => `
           <tr>
             <td><div class="player">${escapeHtml(match.event)}</div></td>
@@ -197,9 +208,11 @@
             <td class="sub">${player.currentSeasonGoals}/${player.currentSeasonAppearances} goals<br>${player.recentGoals}/${player.recentAppearances} recent</td>
             <td class="sub">${player.shots}/${player.shotsOnTarget} shots<br>${player.currentClubGoals}/${player.currentClubAppearances} club</td>
           </tr>`).join('') : '<tr><td class="empty" colspan="4">No player stats yet.</td></tr>';
-        document.querySelector('#updated').textContent = state.updatedAt
-          ? `Last scan: ${new Date(state.updatedAt).toLocaleString()} · Higher rates are prioritised.`
-          : 'Waiting for the first bot scan…';
+        document.querySelector('#updated').textContent = state.lastError
+          ? `Bot ${state.status}: ${state.lastError}`
+          : state.updatedAt
+            ? `Last scan: ${new Date(state.updatedAt).toLocaleString()} · Higher rates are prioritised.`
+            : 'Waiting for the first bot scan…';
       }
       async function refresh() {
         try {
