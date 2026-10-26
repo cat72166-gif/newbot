@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: 1c-2g
     buildCommand: npm ci && PLAYWRIGHT_BROWSERS_PATH=0 node ./node_modules/playwright/cli.js install chromium
-    startCommand: npm start
+    startCommand: PLAYWRIGHT_BROWSERS_PATH=0 npm start
     healthCheckPath: /health
     envVars:
       - key: TELEGRAM_BOT_TOKEN
