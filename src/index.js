@@ -401,12 +401,11 @@ async function scrollLiveMatchLists(page) {
   const scrollResult = await Promise.all(page.frames().map(async (frame) => {
     try {
       return await frame.evaluate(() => {
-        const candidates = [
+        const candidates = [...new Set([
           document.scrollingElement,
           ...document.querySelectorAll('*'),
-        ].filter((element, index, elements) =>
+        ])].filter((element) =>
           element
-          && elements.indexOf(element) === index
           && element.scrollHeight > element.clientHeight + 20
           && element.clientHeight > 100,
         );
@@ -856,6 +855,7 @@ async function sendPlayerStatsOnce(player, eventId) {
       .filter(Boolean);
     let timeoutId;
     try {
+      console.log(`[${new Date().toISOString()}] Fetching Transfermarkt info for ${player}.`);
       const lookup = getTransfermarktInfo(player);
       const info = await Promise.race([
         lookup,
@@ -863,6 +863,7 @@ async function sendPlayerStatsOnce(player, eventId) {
           timeoutId = setTimeout(() => reject(new Error('lookup timed out')), 15_000);
         }),
       ]);
+      console.log(`[${new Date().toISOString()}] Transfermarkt info loaded for ${info.player.name} (${info.appearances} matches, ${info.goals} goals).`);
       if (info.positionGroup.toLowerCase().includes('goalkeeper')) {
         await sendTelegram([
           '🧤 Goalkeeper alert',
@@ -973,6 +974,7 @@ function findMatchClock(overviewText, teams) {
 }
 
 async function check(page) {
+  console.log(`[${new Date().toISOString()}] Starting live scan; navigating to ${url}.`);
   const liveListPayloads = [];
   const eventIds = new Set();
   const collectLiveListRequest = (request) => {
@@ -996,6 +998,7 @@ async function check(page) {
   page.on('request', collectLiveListRequest);
   page.on('response', collectLiveListResponse);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  console.log(`[${new Date().toISOString()}] AR BET page loaded; preparing live-match discovery.`);
   await dismissPopups(page);
   await page.waitForTimeout(4_000);
   // The default match-row view only requests the highlighted live matches.
@@ -1003,6 +1006,7 @@ async function check(page) {
   await showAllSoccerMatches(page);
   // AR BET loads matches lazily in a scrollable panel. Scroll every frame's
   // scroll containers so discovery does not depend on the page-level window.
+  console.log(`[${new Date().toISOString()}] Scanning AR BET's lazy-loaded match list.`);
   let stableScrolls = 0;
   let previousEventCount = eventIds.size;
   for (let attempt = 0; attempt < 80 && stableScrolls < 3; attempt += 1) {
@@ -1019,6 +1023,9 @@ async function check(page) {
       stableScrolls = 0;
       previousEventCount = eventIds.size;
     }
+    if ((attempt + 1) % 10 === 0) {
+      console.log(`[${new Date().toISOString()}] Live-match discovery progress: pass ${attempt + 1}/80, ${eventIds.size} event ID(s).`);
+    }
   }
   page.off('request', collectLiveListRequest);
   page.off('response', collectLiveListResponse);
@@ -1029,6 +1036,7 @@ async function check(page) {
   }
   const discoveredEventIds = [...eventIds];
   console.log(`[${new Date().toISOString()}] Discovered ${discoveredEventIds.length} live match page(s) from AR BET across ${liveListPayloads.length} batch(es).`);
+  console.log(`[${new Date().toISOString()}] Loading market details for ${discoveredEventIds.length} discovered match(es).`);
   const overviewText = await page.locator('body').innerText().catch(() => '');
   const soccerCount = overviewText.match(/\bSoccer\s*\((\d+)\)/i)?.[1];
   if (soccerCount && Number(soccerCount) > discoveredEventIds.length) {
@@ -1110,9 +1118,11 @@ async function check(page) {
   publishDashboard(markets, dashboardAlerts, dashboardLiveMatches);
   let alerts = 0;
   const scanAlerts = [];
+  const qualifyingMarkets = markets.filter((market) => market.yesRate > threshold);
+  const qualifyingPlayers = new Set(qualifyingMarkets.map((market) => market.player).filter(Boolean));
+  console.log(`[${new Date().toISOString()}] Transfermarkt lookups eligible: ${qualifyingPlayers.size} player(s) from ${qualifyingMarkets.length} market(s) above threshold ${threshold}.`);
 
-  for (const market of markets) {
-    if (!(market.yesRate > threshold)) continue;
+  for (const market of qualifyingMarkets) {
     const message = [
       '⚽ AR BET live-market alert',
       `League: ${market.league}`,
