@@ -146,8 +146,10 @@ function startDashboardServer() {
   const server = createServer(async (request, response) => {
     try {
       if (request.url === '/health') {
-        const healthy = botStatus === 'running';
-        response.writeHead(healthy ? 200 : 503, {
+        // This is a liveness check for Render, not an upstream AR BET check.
+        // A temporary navigation/API failure should keep the dashboard alive
+        // so the polling loop can retry instead of triggering a Render restart.
+        response.writeHead(200, {
           'content-type': 'application/json; charset=utf-8',
           'cache-control': 'no-store',
         });
