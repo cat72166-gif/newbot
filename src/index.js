@@ -22,12 +22,18 @@ const targetMarket = 'To score (incl. overtime)';
 const targetMarkets = [targetMarket];
 const liveMatchRetentionMs = 10 * 60 * 1000;
 let stopRequested = false;
+let botStatus = 'starting';
+let botLastError = null;
+let lastSuccessfulCheckAt = null;
 let dashboardAlerts = [];
 let dashboardLiveMatches = [];
 let dashboardMarkets = [];
 const retainedLiveMatches = new Map();
 let dashboardState = {
   updatedAt: null,
+  status: botStatus,
+  lastError: botLastError,
+  lastSuccessfulCheckAt,
   threshold,
   targetMarket,
   targetMarkets,
@@ -39,11 +45,30 @@ let dashboardState = {
   players: [],
 };
 
+function updateBotStatus(status, error = null) {
+  botStatus = status;
+  botLastError = error;
+  dashboardState = {
+    ...dashboardState,
+    status: botStatus,
+    lastError: botLastError,
+    lastSuccessfulCheckAt,
+  };
+}
+
+function markCheckSucceeded() {
+  lastSuccessfulCheckAt = new Date().toISOString();
+  updateBotStatus('running');
+}
+
 function publishDashboard(markets = dashboardMarkets, alerts = dashboardAlerts, liveMatches = dashboardLiveMatches) {
   dashboardMarkets = markets;
   const liveMarkets = markets.filter((market) => market.yesRate > threshold);
   dashboardState = {
     updatedAt: new Date().toISOString(),
+    status: botStatus,
+    lastError: botLastError,
+    lastSuccessfulCheckAt,
     threshold,
     targetMarket,
     targetMarkets,
@@ -120,6 +145,15 @@ function retainLiveMatches(currentMatches, discoveredEventIds) {
 function startDashboardServer() {
   const server = createServer(async (request, response) => {
     try {
+      if (request.url === '/health') {
+        const healthy = botStatus === 'running';
+        response.writeHead(healthy ? 200 : 503, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        response.end(JSON.stringify({ status: botStatus, lastSuccessfulCheckAt }));
+        return;
+      }
       if (request.url === '/api/state') {
         response.writeHead(200, {
           'content-type': 'application/json; charset=utf-8',
@@ -1102,43 +1136,55 @@ async function check(page) {
   }
   dashboardAlerts = [...scanAlerts, ...dashboardAlerts].slice(0, 50);
   publishDashboard(markets, dashboardAlerts);
+  markCheckSucceeded();
   console.log(`[${new Date().toISOString()}] Scanned ${discoveredEventIds.length} live match page(s); found ${markets.length} target market(s); sent ${alerts} alert(s).`);
 }
 
 async function main() {
-  // On Windows, use the installed Edge by default. On Linux/Render, explicitly
-  // use Playwright's installed full Chromium channel rather than the separate
-  // headless-shell executable. ARBET_BROWSER_PATH can override the executable.
   const dashboardServer = startDashboardServer();
-  const launchOptions = {
-    headless: process.env.HEADLESS !== 'false',
-    args: [
-      '--disable-notifications',
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-    ],
-  };
-  if (process.env.ARBET_BROWSER_PATH) {
-    launchOptions.executablePath = process.env.ARBET_BROWSER_PATH;
-  } else if (process.platform === 'win32') {
-    launchOptions.executablePath = defaultWindowsEdge;
-  } else {
-    launchOptions.channel = 'chromium';
-  }
-  const browser = await chromium.launch(launchOptions);
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  // Dismiss ordinary JavaScript dialogs as soon as they are raised, including
-  // dialogs that appear while the page is still loading.
-  page.on('dialog', (dialog) => dialog.dismiss().catch(() => {}));
-  const requestStop = () => { stopRequested = true; };
-  process.once('SIGINT', requestStop);
-  process.once('SIGTERM', requestStop);
+  let browser;
   try {
+    const launchOptions = {
+      headless: process.env.HEADLESS !== 'false',
+      args: [
+        '--disable-notifications',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+      ],
+    };
+    let launchMode = 'Playwright bundled Chromium (default executable)';
+    if (process.env.ARBET_BROWSER_PATH) {
+      launchOptions.executablePath = process.env.ARBET_BROWSER_PATH;
+      launchMode = `ARBET_BROWSER_PATH (${process.env.ARBET_BROWSER_PATH})`;
+    } else if (process.platform === 'win32') {
+      launchOptions.executablePath = defaultWindowsEdge;
+      launchMode = `Windows Edge (${defaultWindowsEdge})`;
+    }
+    console.log(`[${new Date().toISOString()}] Starting browser: platform=${process.platform}, headless=${launchOptions.headless}, mode=${launchMode}.`);
+    try {
+      browser = await chromium.launch(launchOptions);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`[${new Date().toISOString()}] Browser launch failed: platform=${process.platform}, mode=${launchMode}.`);
+      console.error(`[${new Date().toISOString()}] Playwright launch error: ${reason}`);
+      console.error(`[${new Date().toISOString()}] Check that the configured browser executable exists and that the Playwright browser installation matches the installed Playwright package.`);
+      throw error;
+    }
+    updateBotStatus('running');
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    // Dismiss ordinary JavaScript dialogs as soon as they are raised, including
+    // dialogs that appear while the page is still loading.
+    page.on('dialog', (dialog) => dialog.dismiss().catch(() => {}));
+    const requestStop = () => { stopRequested = true; };
+    process.once('SIGINT', requestStop);
+    process.once('SIGTERM', requestStop);
     do {
       try {
         await check(page);
       } catch (error) {
-        console.error(`[${new Date().toISOString()}] Check failed: ${error.message}`);
+        const reason = error instanceof Error ? error.message : String(error);
+        updateBotStatus('degraded', reason);
+        console.error(`[${new Date().toISOString()}] Check failed: ${reason}`);
       }
       if (!once && !stopRequested) {
         // A short sleep loop lets Ctrl+C close the browser cleanly instead of
@@ -1149,13 +1195,23 @@ async function main() {
         }
       }
     } while (!once && !stopRequested);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    updateBotStatus('failed', reason);
+    throw error;
   } finally {
-    await browser.close();
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (error) {
+        console.warn(`[${new Date().toISOString()}] Browser cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     dashboardServer.close();
   }
 }
 
 main().catch((error) => {
-  console.error(error.message);
+  console.error(`[${new Date().toISOString()}] Fatal bot error:`, error);
   process.exitCode = 1;
 });

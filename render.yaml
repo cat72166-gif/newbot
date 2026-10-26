@@ -3,9 +3,9 @@ services:
     name: arbet-live-score-alert
     runtime: node
     plan: 1c-2g
-    buildCommand: npm install && npx playwright install chromium
+    buildCommand: npm ci && PLAYWRIGHT_BROWSERS_PATH=0 node ./node_modules/playwright/cli.js install chromium
     startCommand: npm start
-    healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
@@ -19,6 +19,8 @@ services:
         value: https://inr.arbet.club/live/soccer
       - key: HEADLESS
         value: "true"
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: "0"
       - key: DRY_RUN
         value: "false"
       - key: TRANSFERMARKT_BOT_TOKEN
